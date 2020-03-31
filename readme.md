@@ -28,8 +28,8 @@ Animated charts
 ![eu_deaths](/pics/deaths_cases.gif)
 ![eu_healed](/pics/healed_cases.gif)
 ![w_cases](/pics/world_cases.gif)
-![w_deaths](/pics/deaths_cases.gif)
-![w_healed](/pics/healed_cases.gif)
+![w_deaths](/pics/world_deaths_cases.gif)
+![w_healed](/pics/world_healed_cases.gif)
 
 
 Session info
