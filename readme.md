@@ -19,17 +19,17 @@ Static charts
 ----------------
 highlighting the countries counting the largest numbers of case, healed and deaths
  
-![static charts][/pics/countries.png]
+![static charts](/pics/countries.png)
 
 Animated charts
 ------------------
 
-![eu_cases][/pics/eu_cases.gif]
-![eu_deaths][/pics/deaths_cases.gifs]
-![eu_healed][/pics/healed_cases.png]
-![w_cases][/pics/world_cases.gif]
-![w_deaths][/pics/deaths_cases.gifs]
-![w_healed][/pics/healed_cases.png]
+![eu_cases](/pics/eu_cases.gif)
+![eu_deaths](/pics/deaths_cases.gif)
+![eu_healed](/pics/healed_cases.gif)
+![w_cases](/pics/world_cases.gif)
+![w_deaths](/pics/deaths_cases.gif)
+![w_healed](/pics/healed_cases.gif)
 
 
 Session info
