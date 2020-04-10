@@ -32,6 +32,12 @@ Animated charts
 ![w_healed](/pics/world_healed_cases.gif)
 
 
+Small multiples (facet)
+----------------------------
+
+![eu_smult](/pics/eu_facet.png)
+![us_smult](/pics/us_facet.png)
+
 Session info
 =================
 
