@@ -1,0 +1,932 @@
+---
+title: "Covid-19 - Minimal report"
+author: |
+  | Human Bender
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    #theme: flatly
+    highlight: tango
+    number_sections: true
+    toc: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=TRUE, warning=FALSE, fig.align = "center")
+
+##### Illustrating and Geo-mapping the SARS-CoV-2 #####
+# Thomas Bury 2020
+# 
+
+# graphics, charts, colours and animation
+require(ggplot2)
+require(shadowtext)
+require(viridis)
+require(gghighlight)
+require(paletteer)
+require(ggmap)
+require(scico)
+require(gganimate)
+require(gifski)
+require(ggthemes)
+require(cowplot)
+
+# Data sources
+require(nCov2019)
+library(urbnmapr)
+require(rnaturalearth)
+require(maps)
+
+# Data manipulation and simple features
+require(dplyr)
+require(sf)
+require(tmap)
+require(st)
+require(data.table)
+library(stringdist)
+
+ClosestMatch2 = function(string, stringVector){
+  stringVector[amatch(string, stringVector, maxDist=Inf)]
+}
+
+# Defining a temp ggplot theme complement
+my_theme = theme(plot.title = element_text(color="gray50", size=14), legend.title = element_text(color="gray50"),
+      legend.text = element_text(color = "gray50"))
+```
+
+
+```{r}
+# Some helper functions
+plot_top_states <- function(data, x.var, y.var, color.var, n.state, breaks, title, subtitle) {
+  x.var = enquo(x.var)
+  y.var = enquo(y.var)
+  color.var = enquo(color.var)
+  
+  gg_plot = ggplot(data, aes(x = !! x.var, y = !! y.var, color = !! color.var)) +
+    geom_line(size = 0.8) +
+    geom_point(pch = 21, size = 1) +
+    scale_y_continuous(expand = expansion(add = c(0,0.5)), breaks = breaks, labels = breaks) +
+    #scale_y_log10(expand = expansion(add = c(0,0.5)), breaks = breaks, labels = breaks) +
+    scale_x_continuous(expand = expansion(add = c(0,1.25))) +
+    theme_fivethirtyeight() +
+    labs(subtitle = subtitle, title = title) + 
+    theme(legend.position = "none") +
+    scale_color_paletteer_d("ggthemes::gdoc") +
+    gghighlight(max(!! y.var), max_highlight = n.state, use_direct_label = T, 
+                label_params = list(fill = NA, label.size = NA))
+  return(gg_plot)
+}
+
+
+# facet plots for daily  and weekly new cases
+
+plot_country_facet_line <- function(data, x.var, y.var, title, n.col, n.row, scales){
+  y.var = enquo(y.var)
+  x.var = enquo(x.var)
+  
+  gg_plot = ggplot(data = data, aes(x=!! x.var, y=!! y.var)) + 
+    geom_line(size=1, color='red3') +
+    labs(title = title) + theme_fivethirtyeight() +
+    theme(legend.position = "none") +
+    scale_color_paletteer_d("ggthemes::gdoc") +
+    facet_wrap(~country, scales = scales, ncol = n.col, nrow = n.row)
+  return(gg_plot)
+}
+
+plot_country_facet_line_area <- function(data, x.var, y.var, y.area, title, n.col, n.row, scales){
+  y.var = enquo(y.var)
+  y.area = enquo(y.area)
+  x.var = enquo(x.var)
+  
+  gg_plot = ggplot(data = data) +
+    geom_area(aes(x=!! x.var, y=!! y.area), outline.type=NULL, fill='gold2') +
+    geom_line(aes(x=!! x.var, y=!! y.var), size=1.25, color='magenta4') +
+    labs(title = title) + theme_fivethirtyeight() +
+    theme(legend.position = "none") +
+    scale_color_paletteer_d("ggthemes::gdoc") +
+    facet_wrap(~country, scales = scales, ncol = n.col, nrow = n.row)
+  return(gg_plot)
+}
+
+plot_country_facet <- function(data, x.var, y.var, n.knots, title, n.col, n.row, scales){
+  y.var = enquo(y.var)
+  x.var = enquo(x.var)
+  
+  gg_plot = ggplot(data = data, aes(x=!! x.var, y=!! y.var)) + 
+    geom_point(size=3, color='gray20', alpha=0.5) +
+    stat_smooth(se=FALSE, na.rm = TRUE, color = 'red3', size=1.25, 
+                formula = y ~ s(x, bs = "cs", k = n.knots), method = 'gam') + 
+    #stat_smooth(se=FALSE, na.rm = TRUE, span=.5, size=1.5, color='blue') + 
+    labs(title = title) + theme_fivethirtyeight() +
+    theme(legend.position = "none") +
+    scale_color_paletteer_d("ggthemes::gdoc") +
+    facet_wrap(~country, scales = scales, ncol = n.col, nrow = n.row)
+  return(gg_plot)
+}
+
+plot_country_facet_loess <- function(data, x.var, y.var, span, title, n.col, n.row, scales){
+  y.var = enquo(y.var)
+  x.var = enquo(x.var)
+  
+  gg_plot = ggplot(data = data, aes(x=!! x.var, y=!! y.var)) + 
+    geom_point(size=3, color='gray20', alpha=0.5) +
+    stat_smooth(se=FALSE, na.rm = TRUE, span=span, size=1.25, color='red3') + 
+    labs(title = title) + theme_fivethirtyeight() +
+    theme(legend.position = "none") +
+    scale_color_paletteer_d("ggthemes::gdoc") +
+    facet_wrap(~country, scales = scales, ncol = n.col, nrow = n.row)
+  return(gg_plot)
+}
+
+plot_last_week_map <- function(data, fill.var, min.val, max.val){
+  fill.var = enquo(fill.var)
+  
+  cases_eu = ggplot(data = data, aes(fill=!! fill.var)) + geom_sf() + theme_map() +
+    scale_fill_gradientn(colours = pals::ocean.thermal(100), trans = "log10", 
+                         limits=c(min.val, max.val) )+
+    ggtitle(label = 'Last observation') +
+    my_theme
+  return(cases_eu)
+  
+}
+
+make_map_gif <- function(data, fill.var, group.var, map.data, title, name){
+  fill.var = enquo(fill.var)
+  group.var = enquo(group.var)
+  
+  cases_eu_anim = ggplot() + geom_sf(data = map.data) + 
+    geom_sf(data = data, aes(fill=!! fill.var, group=!! group.var)) + 
+    theme_map() + 
+    scale_fill_gradientn(colours = pals::ocean.thermal(100), trans = "log10") +
+    transition_time(week) + 
+    labs(title = "Tot. confimed cases \n week:  {frame_time}") + 
+    my_theme
+  
+  return(animate(cases_eu_anim, fps = 3, renderer = gifski_renderer()))
+  anim_save(name)
+}
+
+plot_facet_map <- function(data, map.data, fill.var, group.var, title){
+  fill.var = enquo(fill.var)
+  group.var = enquo(group.var)
+  
+  map_facet = ggplot() + geom_sf(data = map.data) + 
+    geom_sf(data = data, aes(fill=!! fill.var, group=!! group.var)) + 
+    theme_map() +
+    #scico::scale_fill_scico(palette = 'batlow', trans = "log10") + 
+    scale_fill_gradientn(colours = pals::ocean.thermal(100), trans = "log10") +
+    facet_wrap(~week) + 
+    labs(title = title) + 
+    my_theme
+  return(map_facet)
+}
+```
+
+
+# Loading the data
+
+The data are collected from the Johns Hopkins University Center for Systems Science and Engineering and cleaned by datahub (see [This repo](https://github.com/datasets/covid-19)). In order to normalize the time axis, I filtered the data to retain the data since the 100th case has been reported. I filter out small countries (population less than 10000) and countries which are not in the world SF file, for convenience.
+
+As the number of cases, deaths and healed are not measured/recorded each day, I need to expand the data set for each possible combination (country, time). If I don't do so, some countries will have missing records for some dates and the resulting charts and GIF will be "blinking". Hopefully, tidyr makes that easy with the function complete (equivalent to expand and join) and with fill (filling NA with the previous non-NA value). I'll use log scales, so better to avoid zero values.
+
+
+
+```{r}
+d = fread('https://raw.githubusercontent.com/datasets/covid-19/master/data/countries-aggregated.csv')
+death_per_country = fread("C:/Users/Thomas/R-open/sarscov2/deaths2018.csv")
+```
+
+
+
+```{r}
+# aggregate by country 
+d = d %>% mutate(Date = as.Date(Date) ) %>%
+  as_tibble  %>% rename(time=Date, country=Country, confirm=Confirmed, heal=Recovered, dead=Deaths) %>%  
+  group_by(country) %>%
+  filter(confirm > 100) %>% #& country != "China"
+  group_by(country) %>%
+  mutate(days_since_100 = as.numeric(time - min(time))) %>%
+  ungroup(country) %>% 
+  tidyr::complete(time = seq.Date(min(time), max(time), by="day"))  %>% group_by(country) %>% 
+  tidyr::fill(confirm, dead, heal) %>% ungroup(country)
+
+# weekly aggregate
+d_w = d %>% group_by(country, week = week(time)) %>% filter(time == max(time))
+# weekly, only complete week
+d_w = setDT(d_w)
+d_w[, confirm_w := confirm - shift(confirm), by=c('country')]
+d_w[d_w$confirm_w<0]$confirm_w = 0
+country_top16 = d_w[week == max(week)-1][order(-confirm)][1:16, country]
+d_w_subset = d_w[(country %in% country_top16) & (week < max(week))]
+```
+
+
+
+```{r}
+# Find the last recorded 20 days of data
+last_20_days = unique(d$time)
+last_20_days = tail(last_20_days[order(last_20_days)], 20)
+```
+
+
+
+```{r}
+# Select the countries with population larger than 10 000, natural earth is a nice source to fetch geo data
+
+world = rnaturalearth::countries110 %>% st_as_sf
+world_countries = world %>% 
+  filter(region_un %in% c('Africa', 'Americas', 'Asia', 'Europe', 'Oceania') & pop_est > 10000) %>% 
+  select(name) %>% pull(name)
+
+# fetch population estimate
+pop_est = world %>% 
+  filter(region_un %in% c('Africa', 'Americas', 'Asia', 'Europe', 'Oceania') & pop_est > 10000) %>% 
+  select(name, pop_est) 
+st_geometry(pop_est) = NULL
+
+pop_est = as_tibble(pop_est)
+
+# Join to covid data
+d = d %>% as_tibble %>% mutate(country = as.factor(country)) %>% 
+  mutate(country =  recode(country, US = "United States"))                 
+d = left_join(d, pop_est, by = c("country" = "name")) 
+d$country = as.factor(d$country)
+
+d_w = d_w %>% as_tibble %>% mutate(country = as.factor(country)) %>% 
+  mutate(country =  recode(country, US = "United States"))                 
+d_w = left_join(d_w, pop_est, by = c("country" = "name")) 
+d_w$country = as.factor(d_w$country)
+
+# remove countries which are not in the world SF file (Andorra, San Marino, etc.)
+d = d %>% filter(complete.cases(.))
+d_W = d_w %>% filter(complete.cases(.))
+
+d = d %>% group_by(country) %>% 
+  mutate(confirm_pm = 1000000*confirm/pop_est, heal_pm = 1000000*heal/pop_est, dead_pm = 1000000*dead/pop_est) %>%
+  ungroup(country)
+
+d_w = d_w %>% group_by(country) %>% 
+  mutate(confirm_pm = 1000000*confirm/pop_est, heal_pm = 1000000*heal/pop_est, dead_pm = 1000000*dead/pop_est) %>%
+  ungroup(country)
+```
+
+
+
+```{r}
+# Subset the world simple feature df
+world_sf = world %>% 
+  dplyr::filter(name %in% world_countries) %>% 
+  select(name, geometry, region_un, pop_est)
+
+# Europe simple features
+# Load the map and filter the countries
+suppressPackageStartupMessages(library(sf))
+#world = st_as_sf(rnaturalearth::countries110)
+europe = world_sf %>% dplyr::filter(region_un=="Europe" & name!='Russia') %>% select(name, geometry)
+# A bounding box for continental Europe.
+europe.bbox = st_polygon(list(matrix(c(-25,29,45,29,45,75,-25,75,-25,29),byrow = T,ncol = 2)))
+europe.clipped = suppressWarnings(st_intersection(europe, st_sfc(europe.bbox, crs=st_crs(europe))))
+eu_countries = europe.clipped %>% dplyr::distinct(name) %>% pull(name)
+#all_eu_countries = world %>% filter(region_un=='Europe') %>% select(sovereignt) %>% st_set_geometry(NULL)
+
+# Rem: as the number of cases, deaths and healed are not measured/recorded each day, 
+# I need to expand the data set for each possible combination (country, time). 
+# If I don't do so, some countries will have missing records for some dates
+# and the resulting GIF will be "blinking". Hopefuly, tidyr makes that easy with the function
+# complete (equivalent to expand and join) and with fill (filling NA with the previous non-NA value).
+# I'll use log scales, so better to avoid zero values
+world_df = d %>%
+  as_tibble  %>% 
+  filter(confirm >= 1 & country %in% world_countries) %>%  arrange(country, time) %>%
+  tidyr::complete(country, time) %>% group_by(country) %>% 
+  tidyr::fill(confirm, dead, heal) %>% ungroup %>% arrange(country, time)
+
+world_df_dead = d %>% 
+  as_tibble  %>%
+  filter(dead >= 1) %>% arrange(country, time) %>%
+  tidyr::complete(country, time) %>% group_by(country) %>% 
+  tidyr::fill(confirm, dead, heal) %>% ungroup %>% arrange(country, time)
+
+world_df_heal = d %>% 
+  as_tibble  %>% 
+  filter(heal >= 1) %>% arrange(country, time) %>%
+  tidyr::complete(country, time) %>% group_by(country) %>% 
+  tidyr::fill(confirm, dead, heal) %>% ungroup %>% arrange(country, time)
+
+# weekly equivalent (less frames for gif, faster to compile)
+world_w_df = d_w %>%
+  as_tibble  %>% 
+  filter(confirm >= 1 & country %in% world_countries) %>%  arrange(country, week) %>%
+  tidyr::complete(country, week) %>% group_by(country) %>% 
+  tidyr::fill(confirm, dead, heal) %>% ungroup %>% arrange(country, week)
+
+world_w_df_dead = d_w %>%
+  as_tibble  %>% 
+  filter(dead >= 1) %>% arrange(country, week) %>%
+  tidyr::complete(country, week) %>% group_by(country) %>% 
+  tidyr::fill(confirm, dead, heal) %>% ungroup %>% arrange(country, week)
+
+world_w_df_heal = d_w %>%
+  as_tibble  %>% 
+  filter(heal >= 1) %>% arrange(country, week) %>%
+  tidyr::complete(country, week) %>% group_by(country) %>% 
+  tidyr::fill(confirm, dead, heal) %>% ungroup %>% arrange(country, week)
+
+
+# date of the first case in Europe
+eu_date_fc = world_df %>% dplyr::filter(country %in% eu_countries) %>% group_by(country) %>% 
+  slice(which.min(confirm)) %>% ungroup %>% select(time) %>% pull(time) %>% min %>% as.Date()
+```
+
+
+# How large is the pandemic?
+
+First of all, a sensible question to ask is what is the magnitude order of the pandemic. Because, there is a very sensitive trade-off between impacting the whole population of a country, at the risk that some households would go bankrupt and all the consequences that it would have, and save lives. 
+Even if life has no value, induced poverty could affect a much more important part of the population and have long term consequences which could be even worst than the immediate effect of the virus.
+
+Moreover, by digging deeper, the consequences of the virus could have been mitigated. Taking Belgium as an example, where 70% of the deaths are Patients from rest houses, whereas the death rate per capita in Sweden is much lower while they didn't lock-down the country. Of course, there are a lot of factors, but we might ask: did the politics act rationally, and did they protect the population correctly while preserving the well being of the rest of the population, especially those struggling for the day to day living?
+Obviously the answer is no, for Belgium at least. Is the forthcoming boom of the unemployment rate worth the price? What would be the benefit of the actual virus management? 
+All those questions are delicate and deserve a profound reflection. I'll not dare to answer but I'll just provide the magnitude order so far of the virus compared to the overall yearly mortality for some countries.
+
+## Raw ranking
+
+The issue is that there is no common definition of what is a "covid death". Therefore the absolute numbers cannot really be related (excepted if two countries share the same definition) however, the resulting ranking can still make sense.
+
+
+```{r}
+country_list = death_per_country$country
+last_df = world_w_df %>% group_by(country) %>% slice(which.max(week)) %>% dplyr::filter(country %in% country_list)
+last_df = left_join(last_df, death_per_country, by = c("country" = "country") )
+last_df = last_df %>% mutate(death_frac = dead/Deaths_2018)
+last_df = last_df %>% tidyr::replace_na(list(death_frac = 0))
+```
+
+```{r, fig.height=7, fig.width=6}
+raw_ranking_plot = ggplot(data = last_df, aes(x=reorder(country, death_frac), y=100*death_frac, color=death_frac)) +
+  geom_point(size = 2.5) + theme_fivethirtyeight() +  
+  coord_flip() +
+  scale_color_gradientn(colours = pals::kovesi.rainbow(100), guide = FALSE) +
+  labs(subtitle = 'Percentage of the total number of deaths in 2018', title = 'Covid-19 mortality fraction') 
+raw_ranking_plot
+```
+
+## Excess mortality
+
+One can remove the bias of the definition by using the excess mortality however, we cannot rule out other causes (or deaths indirectly caused by covid such as the saturation of hospital capacity). The zero baseline represents the average of deaths, all causes. 
+
+```{r}
+world_ex = fread('https://raw.githubusercontent.com/TheEconomist/covid-19-excess-deaths-tracker/master/output-data/excess-deaths/all_weekly_excess_deaths.csv')
+
+country_pop = world_ex %>% select(country, population) %>% 
+  distinct(country, population, .keep_all = FALSE) %>% 
+  group_by(country) %>%
+  filter(population == max(population)) %>% 
+  arrange(country, population)
+
+world_ex = world_ex %>% select(country, year, week, total_deaths, expected_deaths, covid_deaths, excess_deaths, end_date, excess_deaths_per_100k)
+
+world_eu_monthly = world_ex %>% mutate(date = as.Date(end_date)) %>% mutate(month = month(date)) %>%
+  group_by(country, year, month) %>% 
+  summarise_if(is.numeric, sum, na.rm = TRUE) %>% 
+  ungroup() %>% mutate(excess_expected = excess_deaths/expected_deaths)
+
+world_eu_monthly = left_join(world_eu_monthly, country_pop, by = c("country" = "country") ) %>% mutate(excess_pm = 1000000*excess_deaths/population)
+
+world_eu_weekly = world_ex %>% 
+  group_by(country, year, week) %>% 
+  summarise_if(is.numeric, sum, na.rm = TRUE) %>% 
+  ungroup() %>% mutate(excess_expected = excess_deaths/expected_deaths)
+
+world_eu_weekly = left_join(world_eu_weekly, country_pop, by = c("country" = "country") ) %>% mutate(excess_pm = 1000000*excess_deaths/population)
+```
+
+### Absolute numbers per million inhabitants
+
+```{r, fig.height=5, fig.width=5.25}
+plot_country_facet_line(data=world_eu_monthly %>% filter(!country %in% c('Mexico', 'Chile', 'South Africa')), 
+                        x.var=month, 
+                        y.var=excess_pm, 
+                        title='Excess deaths per million inhabitants', 
+                        n.col=4, 
+                        n.row=5,
+                        scales='fixed')
+```
+
+### Excess in percentage of expected number of deaths
+
+#### Monthly
+
+A better way to quantify is to express the excess in the percentage of the expected number of deaths, to quantify the increase relative to the historical expectation.
+
+```{r, fig.height=5, fig.width=5.25}
+excess_exp = plot_country_facet_line(data=world_eu_monthly %>% 
+                                       filter(!country %in% c('Mexico', 'Chile', 'South Africa')), 
+                                     x.var=month, 
+                                     y.var=100*excess_expected, 
+                                     title='Excess deaths divided by expected (%)', 
+                                     n.col=4, 
+                                     n.row=5,
+                                     scales='fixed')
+excess_exp
+```
+
+#### Weekly
+
+```{r, fig.height=6, fig.width=6}
+plot_country_facet_loess(data=world_eu_weekly %>% filter(!country %in% c('Mexico', 'Chile', 'South Africa')), 
+                   x.var=week, 
+                   y.var=100*excess_expected, 
+                   span=.5, 
+                   title='Weakly excess divided by expected deaths (%)', 
+                   n.col=4, 
+                   n.row=5,
+                   scales='fixed')
+```
+
+### Are excess and covid deaths matching? 
+
+The excess mortality is not necessarily due *only* to the covid, some other causes might exist (indirect deaths due to the lack of hospital capacity or any other cause, which can be specific to a country). However, we might expect the excess and covid deaths to match if the definition of "covid death" set by the authorities is consistent.
+
+In the following illustrations, the area stands for the reported covid deaths, the line for the excess death and the zero value for the average of deaths (all causes).
+
+```{r, fig.height=6, fig.width=6}
+ex_cov = plot_country_facet_line_area(data=world_eu_monthly %>% 
+                                        filter(!country %in% c('Mexico', 'Chile', 'South Africa')), 
+                                      x.var=month, 
+                                      y.var=excess_deaths, 
+                                      y.area=covid_deaths,
+                                      title='Excess (line) and covid (area) deaths', 
+                                      n.col=4, 
+                                      n.row=5,
+                                      scales='free')
+ex_cov
+```
+
+```{r, fig.height=6, fig.width=6}
+ex_cov_W = plot_country_facet_line_area(data=world_eu_weekly %>% 
+                                        filter(!country %in% c('Mexico', 'Chile', 'South Africa')), 
+                                      x.var=week, 
+                                      y.var=excess_deaths, 
+                                      y.area=covid_deaths,
+                                      title='Excess (line) and covid (area) deaths', 
+                                      n.col=4, 
+                                      n.row=5,
+                                      scales='free')
+ex_cov_W
+```
+
+
+
+
+
+# Top 5 countries, aggregate figures - Worldwide and in EU
+
+Top 5 countries, absolute and per million of inhabitants figures
+Absolute numbers illustrate that the larger the country the more cases (not necessarily following the population ranking).
+The relative numbers (per million of inhabitants) illustrate how the country is globally dealing with the crisis (of course, density and other parameters make the fight harder, but mostly the policy, how quick we react and analytics usage are involved).
+BE is part of the 5 worst countries, using relative numbers. Especially for the number of deaths per million. This is mainly due to inefficient policies, especially regarding the rest houses (accounting for 50% of the deaths in BE)
+
+## Worldwide
+
+```{r, fig.width=15}
+dead = plot_top_states(data = d, 
+                       x.var=days_since_100,
+                       y.var = dead, 
+                       color.var=country,
+                       n.state = 5L,
+                       breaks = c(1000, 10000, 50000, 100000, 200000, 500000, 1000000),
+                       title = "Nbr of deaths", 
+                       subtitle = "Total deaths vs Number of days since 100th case")
+
+healed= plot_top_states(data = d, 
+                        x.var=days_since_100,
+                        y.var = heal, 
+                        color.var=country,
+                        n.state = 5L,
+                        breaks = c(1000, 10000, 50000, 100000, 500000, 1000000, 2000000),
+                        title = "Nbr of healed", 
+                        subtitle = "Total healed vs Number of days since 100th case")
+
+confirmed = plot_top_states(data = d, 
+                            x.var=days_since_100,
+                            y.var = confirm, 
+                            color.var=country,
+                            n.state = 5L,
+                            breaks = c(1000, 10000, 50000, 100000, 500000, 1000000, 2000000, 3000000, 40000000),
+                            title = "Nbr of cases", 
+                            subtitle = "Total cases vs Number of days since 100th case")
+
+
+
+dead_pm = plot_top_states(data = d, 
+                          x.var=days_since_100,
+                          y.var = dead_pm, 
+                          color.var=country,
+                          n.state = 5L,
+                          breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                          title = "Nbr of deaths per million capita", 
+                          subtitle = "since 100th case")
+
+healed_pm = plot_top_states(data = d, 
+                            x.var=days_since_100,
+                            y.var = heal_pm, 
+                            color.var=country,
+                            n.state = 5L,
+                            breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                            title = "Nbr of healed per million capita", 
+                            subtitle = "since 100th case")
+
+confirmed_pm = plot_top_states(data = d, 
+                               x.var=days_since_100,
+                               y.var = confirm_pm, 
+                               color.var=country,
+                               n.state = 5L,
+                               breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                               title = "Nbr of cases per million capita", 
+                               subtitle = "since 100th case")
+
+# Arrange them on a grid, or save them separately 
+cowplot::plot_grid(dead, dead_pm, ncol = 2)
+cowplot::plot_grid(healed, healed_pm, ncol = 2)
+cowplot::plot_grid(confirmed, confirmed_pm, ncol = 2)
+```
+
+
+## Europe
+
+Highlighting the most impacted countries in EU.
+
+```{r, fig.width=15}
+dead = plot_top_states(data = d %>% filter(country %in% eu_countries), 
+                       x.var=days_since_100,
+                       y.var = dead, 
+                       color.var=country,
+                       n.state = 5L,
+                       breaks = c(1000, 10000, 50000, 100000, 200000, 500000, 1000000),
+                       title = "Nbr of deaths", 
+                       subtitle = "Total deaths vs Number of days since 100th case")
+
+healed= plot_top_states(data = d %>% filter(country %in% eu_countries), 
+                        x.var=days_since_100,
+                        y.var = heal, 
+                        color.var=country,
+                        n.state = 5L,
+                        breaks = c(1000, 10000, 50000, 100000, 500000, 1000000, 2000000),
+                        title = "Nbr of healed", 
+                        subtitle = "Total healed vs Number of days since 100th case")
+
+confirmed = plot_top_states(data = d %>% filter(country %in% eu_countries), 
+                            x.var=days_since_100,
+                            y.var = confirm, 
+                            color.var=country,
+                            n.state = 5L,
+                            breaks = c(1000, 10000, 50000, 100000, 500000, 1000000, 2000000, 3000000, 40000000),
+                            title = "Nbr of cases", 
+                            subtitle = "Total cases vs Number of days since 100th case")
+
+
+
+dead_pm = plot_top_states(data = d %>% filter(country %in% eu_countries), 
+                          x.var=days_since_100,
+                          y.var = dead_pm, 
+                          color.var=country,
+                          n.state = 5L,
+                          breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                          title = "Nbr of deaths per million capita", 
+                          subtitle = "since 100th case")
+
+healed_pm = plot_top_states(data = d %>% filter(country %in% eu_countries), 
+                            x.var=days_since_100,
+                            y.var = heal_pm, 
+                            color.var=country,
+                            n.state = 5L,
+                            breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                            title = "Nbr of healed per million capita", 
+                            subtitle = "since 100th case")
+
+confirmed_pm = plot_top_states(data = d %>% filter(country %in% eu_countries), 
+                               x.var=days_since_100,
+                               y.var = confirm_pm, 
+                               color.var=country,
+                               n.state = 5L,
+                               breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                               title = "Nbr of cases per million capita", 
+                               subtitle = "since 100th case")
+
+# Arrange them on a grid, or save them separately 
+cowplot::plot_grid(dead, dead_pm, ncol = 2)
+cowplot::plot_grid(healed, healed_pm, ncol = 2)
+cowplot::plot_grid(confirmed, confirmed_pm, ncol = 2)
+```
+
+
+
+
+## Some countries without national lockdown
+
+The case of  Sweden, for instance, is a bit particular since they didn't apply a national lockdown while most of the other EU countries did. Did it work? Apparently, this decision was pretty armful for the population.
+
+```{r, fig.width=15}
+no_ld_countries = c('Sweden', 'Hungary', 'Latvia')
+dead = plot_top_states(data = d %>% filter(country %in% no_ld_countries), 
+                       x.var=days_since_100,
+                       y.var = dead, 
+                       color.var=country,
+                       n.state = 5L,
+                       breaks = c(1000, 10000, 50000, 100000, 200000, 500000, 1000000),
+                       title = "Nbr of deaths", 
+                       subtitle = "Total deaths vs Number of days since 100th case")
+
+healed= plot_top_states(data = d %>% filter(country %in% no_ld_countries), 
+                        x.var=days_since_100,
+                        y.var = heal, 
+                        color.var=country,
+                        n.state = 5L,
+                        breaks = c(1000, 10000, 50000, 100000, 500000, 1000000, 2000000),
+                        title = "Nbr of healed", 
+                        subtitle = "Total healed vs Number of days since 100th case")
+
+confirmed = plot_top_states(data = d %>% filter(country %in% no_ld_countries), 
+                            x.var=days_since_100,
+                            y.var = confirm, 
+                            color.var=country,
+                            n.state = 5L,
+                            breaks = c(1000, 10000, 50000, 100000, 500000, 1000000, 2000000, 3000000, 40000000),
+                            title = "Nbr of cases", 
+                            subtitle = "Total cases vs Number of days since 100th case")
+
+
+
+dead_pm = plot_top_states(data = d %>% filter(country %in% no_ld_countries), 
+                          x.var=days_since_100,
+                          y.var = dead_pm, 
+                          color.var=country,
+                          n.state = 5L,
+                          breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                          title = "Nbr of deaths per million capita", 
+                          subtitle = "since 100th case")
+
+healed_pm = plot_top_states(data = d %>% filter(country %in% no_ld_countries), 
+                            x.var=days_since_100,
+                            y.var = heal_pm, 
+                            color.var=country,
+                            n.state = 5L,
+                            breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                            title = "Nbr of healed per million capita", 
+                            subtitle = "since 100th case")
+
+confirmed_pm = plot_top_states(data = d %>% filter(country %in% no_ld_countries), 
+                               x.var=days_since_100,
+                               y.var = confirm_pm, 
+                               color.var=country,
+                               n.state = 5L,
+                               breaks = c(10, 50, 100, 500, 1000, 5000, 10000, 50000),
+                               title = "Nbr of cases per million capita", 
+                               subtitle = "since 100th case")
+
+# Arrange them on a grid, or save them separately 
+cowplot::plot_grid(dead, dead_pm, ncol = 2)
+cowplot::plot_grid(healed, healed_pm, ncol = 2)
+cowplot::plot_grid(confirmed, confirmed_pm, ncol = 2)
+```
+
+
+
+# Weekly new cases
+
+## Worldwide 16 top countries
+
+```{r, fig.width=15, fig.height=15}
+plot_country_facet(data=d_w_subset, x.var=week, y.var=confirm_w, n.knots=9, 
+                   title="Weekly new cases since the 100th case", 
+                   n.col=4, n.row=4, scales='free')
+```
+
+## Europe - 16 countries randomly chosen
+
+```{r, fig.width=15, fig.height=15}
+some_countries = c("Austria", "Belgium", "Czech Rep.", "France", "Germany", "Ireland",
+                   "Italy", "Luxembourg", "Netherlands", "Poland",
+                   "Portugal", "Romania", "Spain", "Sweden", "Switzerland", "Ukraine","United Kingdom")
+d_w = setDT(d_w)
+d_w_eu = d_w[(country %in% some_countries) & (week < max(week))]
+
+plot_country_facet(data=d_w_eu, x.var=week, y.var=confirm_w, n.knots=9, 
+                   title="Weekly new cases since the 100th case", 
+                   n.col=4, n.row=4, scales='free')
+```
+
+
+# Geomapping
+
+```{r}
+### Filter the sarscov2 data 
+last_df = world_w_df %>% group_by(country) %>% 
+  slice(which.max(week)) %>% 
+  dplyr::filter(country %in% eu_countries) %>%
+  ungroup()
+d_eu = world_w_df %>% dplyr::filter(country %in% eu_countries & time > eu_date_fc)
+cov_eu_ts = left_join(d_eu, europe.clipped, by = c("country" = "name") )
+cov_eu_ts = cov_eu_ts %>% arrange(country, time)
+cov_eu_ts = st_as_sf(cov_eu_ts)
+### Join with the geometry
+cov_eu = left_join(last_df, europe.clipped, by = c("country" = "name") )
+cov_eu = st_as_sf(cov_eu)
+
+# # Deaths
+# last_df = world_w_df_dead %>% group_by(country) %>% slice(which.max(time)) %>% dplyr::filter(country %in% eu_countries)
+# d_eu = world_w_df_dead %>% dplyr::filter(country %in% eu_countries & time > eu_date_fc)
+# cov_eu_ts = left_join(d_eu, europe.clipped, by = c("country" = "name") )
+# cov_eu_ts = cov_eu_ts %>% arrange(country, time)
+# cov_eu_ts = st_as_sf(cov_eu_ts)
+# ### Join with the geometry
+# cov_eu = left_join(last_df, europe.clipped, by = c("country" = "name") )
+# cov_eu = st_as_sf(cov_eu)
+# 
+# 
+# # healed
+# ### Filter the sarscov2 data 
+# last_df = world_w_df_heal %>% group_by(country) %>% slice(which.max(time)) %>% dplyr::filter(country %in% eu_countries)
+# d_eu = world_df_heal %>% dplyr::filter(country %in% eu_countries & time > eu_date_fc)
+# cov_eu_ts = left_join(d_eu, europe.clipped, by = c("country" = "name") )
+# cov_eu_ts = cov_eu_ts %>% arrange(country, time)
+# cov_eu_ts = st_as_sf(cov_eu_ts)
+# ### Join with the geometry
+# cov_eu = left_join(last_df, europe.clipped, by = c("country" = "name") )
+# cov_eu = st_as_sf(cov_eu)
+```
+
+## EU 
+
+### Observations of the last full week
+
+```{r}
+max_val = max(cov_eu$confirm, na.rm = TRUE)
+plot_last_week_map(data = cov_eu, fill.var = confirm, min.val=1000, max.val=max_val)
+```
+
+### Animation by week since the 100th case
+
+```{r}
+make_map_gif(data=cov_eu_ts, fill.var=confirm, group.var = country, map.data = europe.clipped, 
+             title = "Tot. confimed cases \n week:  {frame_time}",
+             name="eu_cases.gif")
+```
+
+or if you don't like GIFs, using facet:
+
+```{r, fig.width=15, fig.height=15}
+plot_facet_map(data=cov_eu_ts, map.data=europe.clipped, 
+               fill.var=confirm, group.var=country, 
+               title="Tot. confimed cases")
+```
+
+## World
+
+```{r}
+# Clipping for better rendering
+world.bbox = st_polygon(list(
+  matrix(c(-170,-55, 170, -55, 170, 85,-170, 85, -170, -55),byrow = T,ncol = 2)))
+world_sf_clipped = suppressWarnings(st_intersection(world_sf, st_sfc(world.bbox, crs=st_crs(world))))
+
+# date of the first case in Europe
+eu_date_fc = world_df %>% dplyr::filter(country %in% eu_countries) %>% group_by(country) %>% 
+  slice(which.min(confirm)) %>% ungroup %>% select(time) %>% pull(time) %>% min %>% as.Date()
+
+
+d_world = world_w_df %>% dplyr::filter(country %in% world_countries & time > eu_date_fc)
+cov_world_ts = left_join(d_world, world_sf, by = c("country" = "name") )
+cov_world_ts = cov_world_ts %>% arrange(country, time)
+cov_world_ts = st_as_sf(cov_world_ts)
+### Join with the geometry
+last_df = world_w_df %>% group_by(country) %>% slice(which.max(week)) %>% dplyr::filter(country %in% world_countries) %>% ungroup()
+cov_world = left_join(last_df, world_sf, by = c("country" = "name") )
+cov_world = st_as_sf(cov_world)
+```
+
+### Observations of the last full week
+
+```{r}
+max_val = max(cov_world$confirm, na.rm = TRUE)
+plot_last_week_map(data = cov_world, fill.var = confirm, min.val=1000, max.val = max_val)
+```
+
+### Animation by week since the 100th case
+
+```{r}
+make_map_gif(data=cov_world_ts, fill.var=confirm, group.var = country, map.data = world_sf, 
+             title = "Tot. confimed cases \n week:  {frame_time}",
+             name="world_cases.gif")
+```
+
+
+
+# USA - regional data
+
+The regional US data are fetch from the NY Times github [NY Times github](https://github.com/nytimes/covid-19-data)
+
+```{r}
+# fetch the data
+myfile = "https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv"
+us_cov = fread(myfile)
+# data are already aggregated by state (cumulative numbers)
+# filtering the mainland states
+states_sf = get_urbn_map("states", sf = TRUE) %>% st_as_sf
+states_sf$state_fips = as.integer(states_sf$state_fips) 
+main_states = sort(unique(states_sf$state_fips))
+us_cov = us_cov[fips %in% main_states]
+us_cov = us_cov[, `:=`(true_date = lubridate::ymd(date), week = week(lubridate::ymd(date)))]
+
+# creating the weekly table for the gif and facet
+us_cov_w = unique(us_cov, by = c('week', 'state'), fromLast=TRUE)
+
+# fill the gaps, because there might be missing measures for some states and some dates.
+us_cov = us_cov %>% as_tibble %>%
+  tidyr::complete(true_date = seq.Date(min(true_date), max(true_date), by="day"))  %>% group_by(state) %>% 
+  tidyr::fill(cases, deaths) %>% ungroup
+
+us_cov_w = us_cov_w %>% as_tibble %>%
+  tidyr::complete(week = seq(min(week), max(week)))  %>% group_by(state) %>% 
+  tidyr::fill(cases, deaths) %>% ungroup
+
+# Joining the cov and special features
+us_sp_data = left_join(as.tbl(us_cov_w), states_sf, by = c("fips" = "state_fips"))
+st_geometry(us_sp_data) = us_sp_data$geometry
+last_date = max(us_cov_w$true_date)
+
+last_20_days = unique(us_cov$true_date)
+last_20_days = tail(last_20_days[order(last_20_days)], 20)
+
+# Last recorded data, for the static visualization
+us_sp_last = us_sp_data %>% filter(date == last_date)
+```
+
+## Last observations
+
+```{r}
+max_val = max(us_sp_last$cases, na.rm = TRUE)
+cases_us = plot_last_week_map(data=us_sp_last, fill.var=cases, min.val=1000, max.val=max_val)
+max_val = max(us_sp_last$deaths, na.rm = TRUE)
+deaths_us = plot_last_week_map(data=us_sp_last, fill.var=deaths, min.val=1, max.val=max_val)
+
+cowplot::plot_grid(cases_us, deaths_us, ncol = 2)
+```
+
+## Evolution over time
+
+Using GIF
+
+```{r}
+make_map_gif(data=us_sp_data, fill.var=cases, group.var = state, map.data = states_sf, 
+             title = "Tot. confimed cases \n week:  {frame_time}",
+             name="us_cases.gif")
+```
+
+or facet plot
+
+```{r, fig.width=15, fig.height=15}
+plot_facet_map(data=us_sp_data, 
+               map.data=states_sf, 
+               fill.var=cases, group.var=state,
+               title="Tot. confimed cases")
+```
+
+
+## Evolution per State
+
+```{r}
+# Plotting evolution overtime since the 10th case
+d_us = us_cov %>% 
+  filter(cases > 10) %>%
+  group_by(state) %>%
+  mutate(days_since_10 = as.numeric(true_date - min(true_date))) %>%
+  ungroup %>% 
+  tidyr::complete(true_date = seq.Date(min(true_date), max(true_date), by="day"))  %>% group_by(state) %>% 
+  tidyr::fill(cases, deaths) %>% ungroup
+```
+
+```{r, fig.width=15, fig.height=8}
+confirmed = plot_top_states(data = d_us, 
+                             x.var=days_since_10,
+                             y.var = cases, 
+                             color.var=state,
+                             n.state = 7L,
+                             breaks = c(1000, 10000, 50000, 100000, 200000, 300000, 400000, 500000),
+                             title = "Nbr of confirmed (top 7)", 
+                             subtitle = "Total confirmed vs Number of days since 10th case")
+
+deaths = plot_top_states(data = d_us, 
+                            x.var=days_since_10,
+                            y.var = deaths, 
+                            color.var=state,
+                            n.state = 7L,
+                            breaks = c(1000, 10000, 20000, 30000, 40000, 50000, 60000, 70000),
+                            title = "Nbr of death (top 7)", 
+                            subtitle = "Total deaths vs Number of days since 10th case")
+
+
+
+plot_grid(confirmed, deaths)
+```
+
